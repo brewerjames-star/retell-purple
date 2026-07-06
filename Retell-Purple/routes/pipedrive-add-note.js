@@ -2,22 +2,32 @@
  * pipedrive_add_note
  *
  * Only called when pipedrive_lookup returned a pipedrive_person_id (known
- * caller). For unmatched/new callers, use send_message_email instead.
+ * caller). For unmatched/new callers, use send_message_email instead. hello
  *
- * Input (from Retell):
+ *
+ * Input (from Retell) -- top level, not nested under "args":
  * {
  *   "pipedrive_person_id": "123",
- *   "call_time": "2026-07-06T14:32:00Z",
  *   "direction": "inbound",
- *   "summary": "Caller asked about order status, transferred to Tom.",
- *   "recording_url": "https://dashboard.retellai.com/recordings/abc123"
+ *   "summary": "Caller asked about order status, transferred to Tom."
  * }
+ *
+ * Notes:
+ * - call_time is NOT supplied by the agent -- the agent can only guess at
+ *   "now" from a template variable, so the server stamps its own timestamp
+ *   the moment the request arrives, which is both simpler and more accurate.
+ * - recording_url is NOT supplied by the agent either -- it doesn't exist
+ *   yet mid-call (Retell only generates it after the call ends). The note
+ *   is created without it. If you want the recording attached later, that
+ *   needs a genuinely separate post-call webhook (Retell fires this itself
+ *   after hangup, with the real recording URL) that PATCHes the note --
+ *   a good Phase 1 follow-up, not needed to get testing working now.
  *
  * Output: { "success": true, "note_id": "456" }
  */
 
 module.exports = async function pipedriveAddNote(req, res) {
-  const { pipedrive_person_id, call_time, direction, summary, recording_url } = req.body;
+  const { pipedrive_person_id, direction, summary } = req.body;
 
   if (!pipedrive_person_id) {
     return res.status(400).json({ error: "pipedrive_person_id is required" });
@@ -26,15 +36,15 @@ module.exports = async function pipedriveAddNote(req, res) {
   const base = process.env.PIPEDRIVE_BASE_URL;
   const token = process.env.PIPEDRIVE_API_TOKEN;
 
+  // Stamped server-side on arrival -- not trusted from the agent.
+  const callTime = new Date().toISOString();
+
   const content = [
     `**AI Receptionist Call Log**`,
-    `Time: ${call_time || "unknown"}`,
+    `Time: ${callTime}`,
     `Direction: ${direction || "inbound"}`,
     `Summary: ${summary || "No summary provided."}`,
-    recording_url ? `Recording: ${recording_url}` : null,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  ].join("\n");
 
   try {
     const resp = await fetch(`${base}/notes?api_token=${token}`, {
