@@ -7,6 +7,11 @@ const sendMessageEmail = require("./routes/send-message-email");
 const app = express();
 app.use(express.json());
 
+// Retell post-call webhook. Retell can't send our x-api-key header, so this
+// route does its own ?token= check inside the handler and must be registered
+// ABOVE the requireApiKey guard below.
+app.post("/retell-post-call", require("./routes/retell-post-call"));
+
 // Shared-secret auth: Retell must send this header on every custom function
 // call. Configure it in Retell's tool setup under "Headers".
 function requireApiKey(req, res, next) {
