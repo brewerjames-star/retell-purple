@@ -1,5 +1,5 @@
 /**
- * retell_post_call  (POST /retell-post-call)
+ * retell_post_call  (POST /retell-post-call) 
  *
  * Retell fires this webhook ITSELF after a call, so it's the one place where
  * the recording URL actually exists. It replaces the mid-call pipedrive_add_note
@@ -27,6 +27,52 @@
 // Best-effort in-memory dedup (resets on redeploy — fine at this volume; Pipedrive
 // retries would otherwise create duplicate notes if our response is slow).
 const processed = new Set();
+
+// Same matching approach as pipedrive-lookup.js: normalize to core digits
+// (no leading 0, no +44/44) and compare against every contact directly,
+// rather than relying on Pipedrive's /persons/search -- tested and found
+// unreliable, since it appears to match raw stored text (which may include
+// spaces/brackets/dashes) rather than normalized digits.
+function coreDigits(number) {
+  let digits = (number || "").replace(/\D/g, "");
+  if (digits.startsWith("44") && digits.length > 10) digits = digits.slice(2);
+  else if (digits.startsWith("0")) digits = digits.slice(1);
+  return digits;
+}
+
+async function findPersonByPhone(base, token, rawNumber) {
+  const target = coreDigits(rawNumber);
+  if (!target) return null;
+
+  let start = 0;
+  const limit = 500;
+
+  while (true) {
+    const url = `${base}/persons?start=${start}&limit=${limit}&api_token=${token}`;
+    const resp = await fetch(url);
+    const data = await resp.json();
+    const items = data?.data || [];
+
+    for (const person of items) {
+      const phones = Array.isArray(person.phone)
+        ? person.phone
+        : person.phone
+        ? [{ value: person.phone }]
+        : [];
+      for (const p of phones) {
+        if (p?.value && coreDigits(p.value) === target) {
+          return person;
+        }
+      }
+    }
+
+    const more = data?.additional_data?.pagination?.more_items_in_collection;
+    if (!more) break;
+    start += limit;
+  }
+
+  return null;
+}
 
 module.exports = async function retellPostCall(req, res) {
   // --- 1. Auth via URL token ---
@@ -62,13 +108,9 @@ module.exports = async function retellPostCall(req, res) {
     const base = process.env.PIPEDRIVE_BASE_URL;
     const token = process.env.PIPEDRIVE_API_TOKEN;
 
-    // --- 3. Find the Pipedrive person by phone ---
-    const searchUrl =
-      `${base}/persons/search?term=${encodeURIComponent(phone)}` +
-      `&fields=phone&exact_match=false&api_token=${token}`;
-    const searchResp = await fetch(searchUrl);
-    const searchData = await searchResp.json();
-    const personId = searchData?.data?.items?.[0]?.item?.id;
+    // --- 3. Find the Pipedrive person by phone (tries a few number formats) ---
+    const person = await findPersonByPhone(base, token, phone);
+    const personId = person?.id;
 
     if (!personId) {
       // New / unknown caller — they were already emailed mid-call via
